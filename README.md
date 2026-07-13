@@ -366,12 +366,13 @@ Ray head (Docker)  on :8000  -- Ray Serve proxy (legacy)
 | `/opt/odyn/ray-head/env/ray-head.env` | Ray head environment variables |
 | `/root/phase1/ray-head/deploy/docker-compose.yml` | Ray head Docker Compose |
 | `/opt/odyn/nginx/nginx-proxy.conf` | nginx upstream config |
+| `/etc/nginx/sites-available/ray-dashboard.conf` | public Ray dashboard reverse proxy config |
 
 ---
 
 ## Notes
 
-- `ODYN_RAY_HEAD_SYNC_TOKEN` must match in both `.env` files
+- `ODYN_RAY_HEAD_SYNC_TOKEN` must match in both control-plane and ray-head env files
 - The `X-Served-By` response header identifies which node handled each request
 - Worker nodes do not need public IPs -- Tailscale handles all internal routing
 - To debug nginx: `docker logs odyn-proxy`
@@ -399,6 +400,38 @@ Use both dashboards — they serve different purposes.
 - Replica lifecycle (active, starting, pending) for Ray Serve deployments
 - CPU, RAM, and GPU/VRAM utilisation in real time via the cluster view
 - Live stdout/stderr logs from model actors on all GPU workers
+
+### Public Ray Dashboard URL (repo-managed setup)
+
+Do not publish the dashboard without auth unless you explicitly accept exposure risk.
+
+1. Create DNS `A` record for your dashboard host (example `raydash.example.com`) to point at the Hetzner public IP.
+2. Run the repo-managed installer on the Hetzner head node:
+
+```bash
+cd /root/phase1/cross-oem
+RAY_DASHBOARD_SERVER_NAME="raydash.example.com" \
+RAY_DASHBOARD_UPSTREAM="100.123.244.93:28265" \
+LETSENCRYPT_EMAIL="ops@example.com" \
+RAY_DASHBOARD_AUTH_MODE="basic" \
+RAY_DASHBOARD_BASIC_AUTH_USER="rayviewer" \
+RAY_DASHBOARD_BASIC_AUTH_PASSWORD="replace-me" \
+./setup-scripts/hetzner-headnode/install-ray-dashboard-url.sh
+```
+
+If the Ray head runs on the same host, set `RAY_DASHBOARD_UPSTREAM="127.0.0.1:8265"`.
+
+To make it accessible to anyone with the link (no auth), set:
+
+```bash
+RAY_DASHBOARD_AUTH_MODE="public"
+```
+
+Installer script and templates:
+
+- `setup-scripts/hetzner-headnode/install-ray-dashboard-url.sh`
+- `setup-scripts/hetzner-headnode/templates/etc/nginx/sites-available/ray-dashboard.auth.conf`
+- `setup-scripts/hetzner-headnode/templates/etc/nginx/sites-available/ray-dashboard.public.conf`
 
 ### Prometheus & Grafana
 - `prometheus.yml` scrapes the router metrics endpoint (default `http://127.0.0.1:9309/metrics`).
