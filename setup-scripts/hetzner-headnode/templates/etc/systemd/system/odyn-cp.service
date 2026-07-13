@@ -1,0 +1,14 @@
+[Unit]
+Description=Odyn Control Plane
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/phase1/control-plane
+EnvironmentFile=/opt/odyn-cp/odyn-cp.env
+ExecStart=/root/phase1/control-plane/odyn-cp
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
