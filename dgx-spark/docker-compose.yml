@@ -1,0 +1,51 @@
+services:
+  ray-worker-dgx:
+    image: michaelsigamaniodyn/runtime-vllm-dgx-spark:ray249
+    build:
+      context: ../..
+      dockerfile: cross-oem/dgx-spark/Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+    runtime: nvidia
+    environment:
+      RAY_HEAD_ADDRESS: "${RAY_HEAD_ADDRESS:?RAY_HEAD_ADDRESS must be set}"
+      DGX_NODE_IP: "${DGX_NODE_IP:-127.0.0.1}"
+      METRICS_EXPORT_PORT: "${METRICS_EXPORT_PORT:-8081}"
+      MODEL_NAME: "${MODEL_NAME:-Qwen/Qwen2.5-7B-Instruct}"
+      SERVED_MODEL_NAME: "${SERVED_MODEL_NAME:-Qwen/Qwen2.5-7B-Instruct}"
+      MAX_MODEL_LEN: "${MAX_MODEL_LEN:-8192}"
+      GPU_MEMORY_UTILIZATION: "${GPU_MEMORY_UTILIZATION:-0.90}"
+      TENSOR_PARALLEL_SIZE: "1"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+      # No VLLM_EXTRA_ARGS needed — CUDA path uses defaults
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HF_HOME: /opt/odyn/models
+    volumes:
+      - model_cache:/opt/odyn/models
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    command: >
+      bash -lc "python3 - <<'PY'
+      from pathlib import Path
+      import ray._private.utils as utils
+      path = Path(utils.__file__)
+      source = path.read_text()
+      path.write_text(source.replace('python_version_match_level=\"patch\"', 'python_version_match_level=\"minor\"'))
+      PY
+      python3 -m ray start
+        --address="${RAY_HEAD_ADDRESS}:6379"
+        --resources='{"NVIDIA_GPU": 1.0}'
+        --num-gpus=1
+        --node-ip-address="${DGX_NODE_IP:-127.0.0.1}"
+        --metrics-export-port="${METRICS_EXPORT_PORT:-8081}"
+        --block"
+
+volumes:
+  model_cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: "${MODEL_CACHE_DIR:-/home/michael/.cache/huggingface}"

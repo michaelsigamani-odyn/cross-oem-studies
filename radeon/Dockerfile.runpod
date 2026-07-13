@@ -1,0 +1,29 @@
+FROM michaelsigamaniodyn/runtime-vllm-radeon:rocm721-gfx1151
+
+# Install SSH, Tailscale and basic tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssh-server \
+    iptables \
+    iproute2 \
+    curl \
+    ca-certificates \
+    && curl -fsSL https://tailscale.com/install.sh | sh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Configure SSH
+RUN mkdir -p /var/run/sshd \
+    && echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config \
+    && echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
+
+# Set up SSH key authorized_keys
+RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
+RUN echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHnvUoXLjm0bq3hFm8WtTjJDvD/8LrDJOpg/BMLVbdwL runpod" > /root/.ssh/authorized_keys \
+    && chmod 600 /root/.ssh/authorized_keys
+
+# Copy custom entrypoint script
+COPY cross-oem/radeon/entrypoint_runpod.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 22 8001
+
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,23 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "name": "cross-oem-node-alerts",
+      "interval": "30s",
+      "rules": [
+        {
+          "alert": "CrossOEMNodeFailure",
+          "expr": "router_status == 0",
+          "for": "30s",
+          "labels": {
+            "severity": "critical"
+          },
+          "annotations": {
+            "summary": "Node {{ $labels.node }} is offline",
+            "description": "router_status for {{ $labels.node }} has been zero for 30 seconds."
+          }
+        }
+      ]
+    }
+  ]
+}

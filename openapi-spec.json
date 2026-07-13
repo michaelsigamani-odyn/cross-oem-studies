@@ -1,0 +1,38 @@
+{
+  "openapi" : "3.0.1",
+  "info" : {
+    "title" : "odyn-oem-api",
+    "description" : "Secure API Gateway for Heterogeneous Cross-OEM Cluster",
+    "version" : "2026-06-13T13:31:02Z"
+  },
+  "servers" : [ {
+    "url" : "https://zba37co3g7.health.odyn.network"
+  } ],
+  "paths" : {
+    "/v1/{proxy+}" : {
+      "x-amazon-apigateway-any-method" : {
+        "parameters" : [ {
+          "name" : "proxy",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "security" : [ {
+          "api_key" : [ ]
+        } ]
+      }
+    }
+  },
+  "components" : {
+    "securitySchemes" : {
+      "api_key" : {
+        "type" : "apiKey",
+        "name" : "x-api-key",
+        "in" : "header"
+      }
+    }
+  },
+  "x-amazon-apigateway-security-policy" : "TLS_1_0"
+}

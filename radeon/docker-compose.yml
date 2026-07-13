@@ -1,0 +1,75 @@
+services:
+  ray-worker-radeon:
+    image: michaelsigamaniodyn/runtime-vllm-radeon:rocm721-gfx1151
+    build:
+      context: ../..
+      dockerfile: cross-oem/radeon/Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+    environment:
+      # Ray cluster head — set to the Tailscale IP of the head node
+      RAY_HEAD_ADDRESS: "${RAY_HEAD_ADDRESS:?RAY_HEAD_ADDRESS must be set}"
+      RADEON_NODE_IP: "${RADEON_NODE_IP:?RADEON_NODE_IP must be set to a unique, routable Radeon node IP}"
+      METRICS_EXPORT_PORT: "${METRICS_EXPORT_PORT:-8081}"
+      DASHBOARD_AGENT_LISTEN_PORT: "${DASHBOARD_AGENT_LISTEN_PORT:-52375}"
+      DASHBOARD_AGENT_GRPC_PORT: "${DASHBOARD_AGENT_GRPC_PORT:-65428}"
+      RUNTIME_ENV_AGENT_PORT: "${RUNTIME_ENV_AGENT_PORT:-59527}"
+      # Custom resource label so serve_config.yaml can target this node type
+      RAY_CUSTOM_RESOURCES: '{"AMD_GPU":1.0}'
+      # Model served by this worker
+      MODEL_NAME: "${MODEL_NAME:-Qwen/Qwen2.5-7B-Instruct}"
+      SERVED_MODEL_NAME: "${SERVED_MODEL_NAME:-Qwen/Qwen2.5-7B-Instruct}"
+      MAX_MODEL_LEN: "${MAX_MODEL_LEN:-8192}"
+      GPU_MEMORY_UTILIZATION: "${GPU_MEMORY_UTILIZATION:-0.75}"
+      TENSOR_PARALLEL_SIZE: "1"
+      # gfx1151 requires --enforce-eager; bfloat16 for stability
+      VLLM_EXTRA_ARGS: "--enforce-eager --dtype bfloat16"
+      # ROCm device selection
+      ROCR_VISIBLE_DEVICES: "0"
+      PYTORCH_ROCM_ARCH: "gfx1151"
+      HSA_NO_SCRATCH_RECLAIM: "1"
+      VLLM_USE_TRITON_FLASH_ATTN: "1"
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HF_HOME: /opt/odyn/models
+    volumes:
+      - model_cache:/opt/odyn/models
+    # ROCm GPU device pass-through
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    command: >
+      bash -lc "python3 - <<'PY'
+      from pathlib import Path
+      import ray._private.utils as utils
+      path = Path(utils.__file__)
+      source = path.read_text()
+      path.write_text(source.replace('python_version_match_level=\"patch\"', 'python_version_match_level=\"minor\"'))
+      PY
+      python3 -m ray start
+        --address="${RAY_HEAD_ADDRESS}:6379"
+        --resources='{"AMD_GPU":1.0}'
+        --num-gpus=1
+        --node-ip-address="${RADEON_NODE_IP:-10.6.45.123}"
+        --dashboard-agent-listen-port="${DASHBOARD_AGENT_LISTEN_PORT:-52375}"
+        --dashboard-agent-grpc-port="${DASHBOARD_AGENT_GRPC_PORT:-65428}"
+        --runtime-env-agent-port="${RUNTIME_ENV_AGENT_PORT:-59527}"
+        --metrics-export-port="${METRICS_EXPORT_PORT:-8081}"
+        --block"
+
+volumes:
+  model_cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: "${MODEL_CACHE_DIR:-/home/michael/.cache/huggingface}"

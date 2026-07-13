@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "odyn.network.toolkit"
+version = "1.0.0"
+description = "Odyn Cross-OEM cluster and failover steering toolkit"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "typer>=0.9.0",
+    "httpx>=0.20.0",
+    "requests>=2.25.0",
+    "fastapi>=0.80.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+odyn-toolkit = "cli_sdk:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = { find = { where = ["src"] } }
+py-modules = ["cli_sdk"]
+include-package-data = true

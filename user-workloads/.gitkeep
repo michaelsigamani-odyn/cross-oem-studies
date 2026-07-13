@@ -1,0 +1,2 @@
+# Placeholder to keep user-workloads directory tracked in Git.
+# Actual workload payload files (.json) are ignored via .gitignore.
