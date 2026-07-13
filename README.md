@@ -42,7 +42,7 @@ PYTHONPATH=src python3 -c "import sys,main as m;sys.argv=['','deploy'];m.main()"
 PYTHONPATH=src python3 -c "import sys,main as m;sys.argv=['','e2e'];m.main()"
 ```
 
-All core logic paths (deploy, load, split validation, safe-refactor with rollback) have coverage in `test/test_workflow_e2e.py`. The `test/test_workflow_e2e.py` runs fully mocked.
+All core logic paths (deploy, load, split validation, safe-refactor with rollback) are covered in pytest (`test/test_e2e_regression.py` plus workflow/unit tests) and run fully mocked.
 
 ---
 
@@ -50,15 +50,39 @@ All core logic paths (deploy, load, split validation, safe-refactor with rollbac
 
 - Hetzner Cloud CX43 server (Ubuntu 24.04)
 - Tailscale account with access to the Odyn tailnet
-- Port `8088` open in the Hetzner Cloud firewall (inbound TCP)
+- Root shell access on the head node
+- Existing `phase1` repository access
 
 ---
 
-## 1. Install Docker
+## 0. Define Deployment Variables (do this first)
+
+Set these once and reuse them in every later step.
+
+```bash
+export HEAD_PUBLIC_IP="178.104.165.93"
+export HEAD_TAILNET_IP="100.72.227.97"
+export TAILSCALE_AUTH_KEY="tskey-REPLACE_ME"
+export ODYN_SYNC_TOKEN="09ad5ee348cdeda4bec87f42c47aaf8891b4fa65c0a33d6f277186eeedf6af76"
+export RAY_HEAD_IMAGE="michaelsigamaniodyn/ray-head:ray249-py312"
+```
+
+Generate the Tailscale auth key at https://login.tailscale.com/admin/settings/keys.
+
+---
+
+## 1. Install Base System Dependencies
 
 ```bash
 apt-get update
-apt-get install -y ca-certificates curl gnupg
+apt-get install -y ca-certificates curl gnupg wget postgresql
+```
+
+---
+
+## 2. Install Docker Engine
+
+```bash
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
@@ -66,11 +90,13 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.
   | tee /etc/apt/sources.list.d/docker.list
 apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io
+systemctl enable docker
+systemctl start docker
 ```
 
 ---
 
-## 2. Install Go 1.25.1
+## 3. Install Go 1.25.1
 
 ```bash
 wget https://go.dev/dl/go1.25.1.linux-amd64.tar.gz
@@ -82,27 +108,25 @@ go version
 
 ---
 
-## 3. Install Tailscale
+## 4. Install and Join Tailscale
 
 ```bash
 curl -fsSL https://tailscale.com/install.sh | sh
-systemctl start tailscaled
 systemctl enable tailscaled
-tailscale up --authkey=YOUR_TAILSCALE_AUTH_KEY --hostname=odyn-hetzner
+systemctl start tailscaled
+tailscale up --authkey="${TAILSCALE_AUTH_KEY}" --hostname=odyn-hetzner
 tailscale ip -4
 ```
 
-Generate an auth key at https://login.tailscale.com/admin/settings/keys
+Confirm the returned Tailscale IPv4 matches `${HEAD_TAILNET_IP}`.
 
 ---
 
-## 4. Set Up PostgreSQL
+## 5. Configure PostgreSQL
 
 ```bash
-apt-get install -y postgresql
-systemctl start postgresql
 systemctl enable postgresql
-
+systemctl start postgresql
 sudo -u postgres psql << 'SQL'
 CREATE USER marketplace WITH PASSWORD 'marketplace';
 CREATE DATABASE marketplace OWNER marketplace;
@@ -112,65 +136,37 @@ SQL
 
 ---
 
-## 5. Clone the Repo
+## 6. Clone `phase1`
 
 ```bash
 cd /root
 git clone https://github.com/Odyn-Network/phase1.git
-cd phase1
+cd /root/phase1
+```
+
+If this `cross-oem` directory is not already present under `phase1`, clone it now so setup assets are available:
+
+```bash
+git clone https://github.com/Odyn-Network/cross-oem.git cross-oem
 ```
 
 ---
 
-## 6. Build and Install odyn-cp
+## 7. Build and Configure `odyn-cp`
 
 ```bash
 cd /root/phase1/control-plane
 go build -o odyn-cp .
 ```
 
-Create `/root/phase1/control-plane/.env`:
-
-```env
-DATABASE_URL=postgres://marketplace:marketplace@localhost:5432/marketplace?sslmode=disable
-PORT=8081
-GRPC_PORT=50051
-ODYN_RAY_HEAD_SYNC_TOKEN=09ad5ee348cdeda4bec87f42c47aaf8891b4fa65c0a33d6f277186eeedf6af76
-RAY_HEAD_GCS_PORT=6379
-RAY_HEAD_DASHBOARD_PORT=8265
-RAY_HEAD_SERVE_PORT=8000
-RAY_HEAD_HEALTH_PORT=8002
-LOG_LEVEL=info
-ENV=production
-FRP_BIND_PORT=7002
-FRP_VHOST_HTTP_PORT=8082
-FRP_SSH_PORT_START=10000
-FRP_SSH_PORT_END=20000
-FRP_RAY_PORT_START=20001
-FRP_RAY_PORT_END=30000
-ODYN_RAY_HEAD_HOST=100.72.227.97
-ODYN_RAY_HEAD_HOSTS=100.72.227.97
-```
-
-Create the systemd service:
+Render and install all required config/service files from repo-managed templates:
 
 ```bash
-cat > /etc/systemd/system/odyn-cp.service << 'SERVICE'
-[Unit]
-Description=Odyn Control Plane
-After=network.target postgresql.service
-
-[Service]
-Type=simple
-WorkingDirectory=/root/phase1/control-plane
-EnvironmentFile=/root/phase1/control-plane/.env
-ExecStart=/root/phase1/control-plane/odyn-cp
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
+cd /root/phase1/cross-oem
+HEAD_TAILNET_IP="${HEAD_TAILNET_IP}" \
+ODYN_SYNC_TOKEN="${ODYN_SYNC_TOKEN}" \
+RAY_HEAD_IMAGE="${RAY_HEAD_IMAGE}" \
+./setup-scripts/hetzner-headnode/install-headnode-config.sh
 
 systemctl daemon-reload
 systemctl enable odyn-cp
@@ -178,110 +174,96 @@ systemctl start odyn-cp
 systemctl status odyn-cp
 ```
 
+Files installed by this step:
+
+- `/opt/odyn-cp/odyn-cp.env`
+- `/opt/odyn/ray-head/env/ray-head.env`
+- `/opt/odyn/nginx/nginx-proxy.conf`
+- `/etc/systemd/system/odyn-cp.service`
+
+Template sources in repo:
+
+- `setup-scripts/hetzner-headnode/templates/opt/odyn-cp/odyn-cp.env`
+- `setup-scripts/hetzner-headnode/templates/opt/odyn/ray-head/env/ray-head.env`
+- `setup-scripts/hetzner-headnode/templates/opt/odyn/nginx/nginx-proxy.conf`
+- `setup-scripts/hetzner-headnode/templates/etc/systemd/system/odyn-cp.service`
+
 ---
 
-## 7. Set Up Ray Head Env
+## 8. Create Ray Head Environment File
+
+This file is already rendered to `/opt/odyn/ray-head/env/ray-head.env` by Step 7.
+
+Validate content quickly:
 
 ```bash
-mkdir -p /opt/odyn/ray-head/env
-```
-
-Create `/opt/odyn/ray-head/env/ray-head.env`:
-
-```env
-ODYN_CONTROL_PLANE_URL=http://100.72.227.97:8081
-ODYN_RAY_HEAD_SYNC_TOKEN=09ad5ee348cdeda4bec87f42c47aaf8891b4fa65c0a33d6f277186eeedf6af76
-RAY_HEAD_NODE_IP=100.72.227.97
-ODYN_POLL_ASSIGNMENT=true
-RAY_HEAD_PORT=6379
-RAY_DASHBOARD_PORT=8265
-RAY_SERVE_PORT=8000
-RAY_HEALTH_PORT=8002
-RAY_METRICS_EXPORT_PORT=9091
-REDIS_URL=redis://100.72.227.97:6380
-MODEL_CACHE_DIR=/opt/models
-RAY_HEAD_IMAGE=michaelsigamaniodyn/ray-head:ray249-py312
-RAY_SERVE_QUEUE_LENGTH_RESPONSE_DEADLINE_S=1.0
-VLLM_EXTRA_ARGS=--enforce-eager --max-num-seqs 128
+grep -E "ODYN_CONTROL_PLANE_URL|RAY_HEAD_NODE_IP|RAY_HEAD_IMAGE" /opt/odyn/ray-head/env/ray-head.env
 ```
 
 ---
 
-## 8. Start the Ray Head
+## 9. Start Ray Head Services
 
 ```bash
 cd /root/phase1/ray-head/deploy
-
-RAY_HEAD_IMAGE=michaelsigamaniodyn/ray-head:ray249-py312 \
+RAY_HEAD_IMAGE="${RAY_HEAD_IMAGE}" \
 RAY_HEAD_ENV_FILE=/opt/odyn/ray-head/env/ray-head.env \
 docker compose up -d
-
 sleep 15
-docker logs odyn-ray-head --tail 10
+docker logs odyn-ray-head --tail 20
 ```
 
 ---
 
-## 9. Open Firewall Port
+## 10. Open Public Firewall Rule
 
-In the Hetzner Cloud Console, add an inbound firewall rule: Protocol TCP, Port 8088, Source Any.
+In the Hetzner Cloud Console, add inbound TCP `8088` from `0.0.0.0/0`.
 
 ---
 
-## 10. Write the nginx Config
+## 11. Write nginx Upstream Config
 
-Create `/root/nginx-proxy.conf`:
+The upstream config is managed in repo and installed to `/opt/odyn/nginx/nginx-proxy.conf` by Step 7.
 
-```nginx
-upstream vllm_cluster {
-    server 100.108.245.77:9000;   # odyn-radeon
-    server 100.92.148.18:9000;    # odyn-dgx1
-    server 100.112.76.83:9000;    # odyn-dgx2
-    server 100.111.244.85:8080;   # odyn-vast-baremetal
-}
+To customize workers, edit the repo template and reinstall:
 
-server {
-    listen 8088;
-    location / {
-        proxy_pass http://vllm_cluster;
-        proxy_read_timeout 120s;
-        proxy_connect_timeout 10s;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        add_header X-Served-By $upstream_addr always;
-    }
-}
+```bash
+cd /root/phase1/cross-oem
+$EDITOR setup-scripts/hetzner-headnode/templates/opt/odyn/nginx/nginx-proxy.conf
+HEAD_TAILNET_IP="${HEAD_TAILNET_IP}" \
+ODYN_SYNC_TOKEN="${ODYN_SYNC_TOKEN}" \
+RAY_HEAD_IMAGE="${RAY_HEAD_IMAGE}" \
+./setup-scripts/hetzner-headnode/install-headnode-config.sh
 ```
 
 ---
 
-## 11. Start the nginx Proxy
+## 12. Start nginx Proxy Container
 
 ```bash
 docker run -d --restart unless-stopped \
   --network host \
   --name odyn-proxy \
-  -v /root/nginx-proxy.conf:/etc/nginx/conf.d/default.conf \
+  -v /opt/odyn/nginx/nginx-proxy.conf:/etc/nginx/conf.d/default.conf \
   nginx:alpine
 ```
 
 ---
 
-## 12. Verify
+## 13. Verify End-to-End Routing
 
 ```bash
 systemctl status odyn-cp
 docker ps
 
-# Burst test from anywhere on the internet (replace HOST with your public IP)
-  HOST=${PUBLIC_HOST:-178.104.165.93}
-  for i in 1 2 3 4 5 6 7 8 9; do
-    curl -s -D - http://$HOST:8088/v1/chat/completions \
-      -H "Content-Type: application/json" \
-      -d '{"model":"qwen2.5-7b","messages":[{"role":"user","content":"hello"}],"max_tokens":10}' \
-      -o /dev/null | grep "X-Served-By" &
-  done
-  wait
+HOST="${PUBLIC_HOST:-${HEAD_PUBLIC_IP}}"
+for i in 1 2 3 4 5 6 7 8 9; do
+  curl -s -D - "http://${HOST}:8088/v1/chat/completions" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"qwen2.5-7b","messages":[{"role":"user","content":"hello"}],"max_tokens":10}' \
+    -o /dev/null | grep "X-Served-By" &
+done
+wait
 ```
 
 ---
@@ -332,10 +314,9 @@ Host odyn-dgx2
 With this config in place, connect with `ssh odyn-hetzner`, `ssh odyn-radeon`, `ssh odyn-dgx1`, or `ssh odyn-dgx2`.
 
 ---
+## Add a Worker Node
 
-
-
-1. Install Tailscale on the new machine and join the tailnet
+1. Install Tailscale on the new machine and join the same tailnet.
 2. Pull and start the correct vLLM Docker image for the hardware type:
 
 | Hardware | Image | Registry |
@@ -344,9 +325,9 @@ With this config in place, connect with `ssh odyn-hetzner`, `ssh odyn-radeon`, `
 | AMD Radeon (ROCm) | `michaelsigamaniodyn/runtime-vllm-radeon:python3.12` | [Docker Hub](https://hub.docker.com/repositories/michaelsigamaniodyn) |
 | NVIDIA RTX / Blackwell (x86_64, sm_120+) | `michaelsigamaniodyn/runtime-vllm-rtx5090:latest` | [Docker Hub](https://hub.docker.com/repositories/michaelsigamaniodyn) |
 
-For autoscaling, always pull the pre-built image from Docker Hub rather than building locally. If a new image is needed, build from the relevant Dockerfile in the repo (`cross-oem/dgx-spark/`, `cross-oem/radeon/`, or `cross-oem/rtx-5090/`) and push to `michaelsigamaniodyn` before deploying.
+For autoscaling, pull pre-built images from Docker Hub rather than building locally. If a new image is required, build from `cross-oem/dgx-spark/`, `cross-oem/radeon/`, or `cross-oem/rtx-5090/`, then push to `michaelsigamaniodyn` before deploy.
 
-3. Add the Tailscale IP and port to `/root/nginx-proxy.conf` under `upstream vllm_cluster`
+3. Add the worker Tailscale IP and inference port to `setup-scripts/hetzner-headnode/templates/opt/odyn/nginx/nginx-proxy.conf` under `upstream vllm_cluster`, then rerun Step 11.
 4. Restart the proxy:
 
 ```bash
@@ -380,11 +361,11 @@ Ray head (Docker)  on :8000  -- Ray Serve proxy (legacy)
 
 | Path | Description |
 |---|---|
-| `/root/phase1/control-plane/.env` | odyn-cp environment variables |
+| `/opt/odyn-cp/odyn-cp.env` | odyn-cp environment variables |
 | `/root/phase1/control-plane/odyn-cp` | compiled Go binary |
 | `/opt/odyn/ray-head/env/ray-head.env` | Ray head environment variables |
 | `/root/phase1/ray-head/deploy/docker-compose.yml` | Ray head Docker Compose |
-| `/root/nginx-proxy.conf` | nginx upstream config |
+| `/opt/odyn/nginx/nginx-proxy.conf` | nginx upstream config |
 
 ---
 
